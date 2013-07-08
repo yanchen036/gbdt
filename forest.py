@@ -6,6 +6,7 @@
 #
 
 from sets import set
+import math
 
 class Node:
     def __init__(self, tree):
@@ -13,6 +14,7 @@ class Node:
         # if is not real, left_child is split_val, others in right_node;
         self.left_child = None
         self.right_child = None
+        self.split_fea = None
         self.split_val = None
         self.depth = 0
 
@@ -59,7 +61,7 @@ class Node:
         pred_val = 0.0
         for idx in self.label_indices:
             pred_val += self.tree.forest.labels[idx]
-        self.predict_value = self.learning_rate * pred_val
+        self.predict_value = pred_val / len(self.label_indices)
 
     # after train a single tree, most of the info in node could be deleted
     def clean_up(self):
@@ -80,6 +82,7 @@ class Node:
             possible_value_set = self.get_possible_value(fea_idx)
             min_loss = 1e10
             opt_split_val = None
+            opt_split_fea = None
             opt_left_sample_indices = None
             opt_left_label_indices = None
             opt_left_residual = None
@@ -108,6 +111,7 @@ class Node:
                 loss = self.calculate_loss(left_residual, right_residual, left_label_indices, right_label_indices)
                 if loss < min_loss:
                     min_loss = loss
+                    opt_split_fea = fea_idx
                     opt_split_val = split_value
                     opt_left_sample_indices = left_sample_indices
                     opt_left_label_indices = left_label_indices
@@ -117,6 +121,7 @@ class Node:
                     opt_right_residual = right_residual
 
         # create child
+        self.split_fea = opt_split_fea
         self.split_val = opt_split_val
 
         self.left_child = Node(self.tree)
@@ -125,11 +130,20 @@ class Node:
         self.left_child.residual = opt_left_residual
         self.left_child.depth = self.depth + 1
 
-        self.right_child = Node(self.learning_rate)
+        self.right_child = Node(self.tree)
         self.right_child.sample_indices = opt_right_sample_indices
         self.right_child.label_indices = opt_right_label_indices
         self.right_child.residual = opt_right_residual
         self.right_child.depth = self.depth + 1
+
+    # format
+    # fea:split / -1:predict_val
+    # if fea == -1, it's leaf node, split become predict_val
+    def to_string(self):
+        if self.is_leaf:
+            return '-1:%f' % self.predict_value
+        else:
+            return '%d:%s' % (self.split_fea, self.split_val)
 
 class Tree:
     def __init__(self, forest):
@@ -168,14 +182,62 @@ class Tree:
                 score[idx] += node.predict_value
         return score
 
+    def to_string(self):
+        tree_string = ''
+        # dfs
+        node_stack = list()
+        node_stack.append(self.root)
+        is_first = True
+        while len(node_stack) > 0:
+            cur_node = node_stack.pop(len(node_stack) - 1)
+            if is_first:
+                tree_string += cur_node.to_string()
+                is_first = False
+            else:
+                tree_string += ',' + cur_node.to_string()
+            if not cur_node.is_leaf:
+                node_stack.append(cur_node.right_child)
+                node_stack.append(cur_node.left_child)
+        return tree_string
+
 class Forest:
     def __init__(self, tree_num, restrict_depth, learning_rate, is_real):
         self.tree_num = tree_num
         self.restrict_depth = restrict_depth
         self.learning_rate = learning_rate
+        # is_real is boolean
         self.is_real = is_real
         self.residual = None
-
         # all trainging set, each element is a feature list
-        self.samples = list()
-        self.labels = list()
+        self.samples = None
+        # label is float
+        self.labels = None
+        # trees
+        self.trees = None
+
+    def initialize(self, samples, labels):
+        self.samples = samples
+        self.labels = labels
+        #calculate residual
+        self.residual = list([0.0] * len(self.samples))
+        avg_y = math.fsum(self.labels)
+        avg_y /= len(self.labels)
+        for i in range(0, len(self.labels)):
+            self.residual[i] = self.labels[i] - avg_y
+
+    def train(self):
+        self.trees = list()
+        for tree_idx in range(0, self.tree_num):
+            cur_tree = Tree(self)
+            cur_tree.train_a_single_tree(self.residual)
+            cur_additive = cur_tree.additive_score()
+            for i in range(0, len(self.residual)):
+                self.residual[i] -= self.learning_rate * cur_additive[i]
+
+    def dump_model(self, model_file):
+        tree_lines = list()
+        for i in range(0, self.tree_num):
+            tree_lines.append(self.trees[i].to_string() + '\n')
+        model_fp = open(model_file, 'w')
+        model_fp.writelines(tree_lines)
+        model_fp.close()
